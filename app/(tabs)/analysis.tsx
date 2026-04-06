@@ -1,70 +1,412 @@
-import { useMemo } from "react";
-import { ScrollView, Text, View, ActivityIndicator } from "react-native";
+import { useMemo, useState } from "react";
+import { ActivityIndicator, ScrollView, Text, View } from "react-native";
+import Svg, { Circle, Defs, Line as SvgLine, LinearGradient, Path, Stop } from "react-native-svg";
+
 import { ScreenContainer } from "@/components/screen-container";
-import { useSessionStore } from "@/lib/session-store";
 import { useColors } from "@/hooks/use-colors";
-import { generateAnalysisData, normalize } from "@/lib/statistics";
-import type { CorrelationResult, StatsSummary } from "@/lib/types";
+import { generateAnalysisData } from "@/lib/statistics";
+import { useSessionStore } from "@/lib/session-store";
+import type { AnalysisData, CorrelationResult, Session, StatsSummary } from "@/lib/types";
+
+type TrendMetricKey = keyof AnalysisData["stats"];
+
+type TrendMetricConfig = {
+  key: TrendMetricKey;
+  title: string;
+  description: string;
+  color: string;
+};
+
+type ChartPoint = {
+  x: number;
+  y: number;
+};
+
+function getMetricValue(session: Session, key: TrendMetricKey): number {
+  switch (key) {
+    case "sentimentScore":
+      return session.speech.sentimentScore;
+    case "valence":
+      return session.selfReport.valence;
+    case "arousal":
+      return session.selfReport.arousal;
+    case "heartRate":
+      return session.biometrics.heartRate;
+    case "skinConductance":
+      return session.biometrics.skinConductance;
+  }
+}
+
+function formatMetricValue(key: TrendMetricKey, value: number): string {
+  switch (key) {
+    case "sentimentScore":
+      return `${value > 0 ? "+" : ""}${value.toFixed(2)}`;
+    case "valence":
+    case "arousal":
+      return value.toFixed(1);
+    case "heartRate":
+      return `${value.toFixed(0)} bpm`;
+    case "skinConductance":
+      return `${value.toFixed(2)} uS`;
+  }
+}
+
+function formatDateLabel(timestamp: string): string {
+  const date = new Date(timestamp);
+  return `${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function buildLinePath(points: ChartPoint[]): string {
+  if (points.length === 0) return "";
+  return points
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`)
+    .join(" ");
+}
+
+function buildAreaPath(points: ChartPoint[], height: number): string {
+  if (points.length === 0) return "";
+  if (points.length === 1) {
+    const point = points[0];
+    return `M ${point.x} ${point.y} L ${point.x} ${height} Z`;
+  }
+
+  const first = points[0];
+  const last = points[points.length - 1];
+  return `${buildLinePath(points)} L ${last.x} ${height} L ${first.x} ${height} Z`;
+}
+
+function getCorrelationAccent(r: number, positiveColor: string, negativeColor: string, neutralColor: string) {
+  const absR = Math.abs(r);
+  if (absR < 0.2) return neutralColor;
+  return r >= 0 ? positiveColor : negativeColor;
+}
+
+function SummaryCard({
+  title,
+  value,
+  color,
+}: {
+  title: string;
+  value: string;
+  color: string;
+}) {
+  const colors = useColors();
+
+  return (
+    <View
+      style={{
+        flex: 1,
+        backgroundColor: colors.surface,
+        borderRadius: 16,
+        padding: 14,
+        borderWidth: 1,
+        borderColor: colors.border,
+        gap: 10,
+      }}
+    >
+      <View
+        style={{
+          width: 28,
+          height: 4,
+          borderRadius: 999,
+          backgroundColor: color,
+        }}
+      />
+      <View>
+        <Text style={{ color: colors.muted, fontSize: 11, marginBottom: 4 }}>{title}</Text>
+        <Text style={{ color: colors.foreground, fontSize: 24, fontWeight: "800" }}>{value}</Text>
+      </View>
+    </View>
+  );
+}
+
+function TrendChartCard({
+  metricKey,
+  title,
+  description,
+  color,
+  data,
+  labels,
+  summary,
+}: {
+  metricKey: TrendMetricKey;
+  title: string;
+  description: string;
+  color: string;
+  data: number[];
+  labels: string[];
+  summary: StatsSummary;
+}) {
+  const colors = useColors();
+  const [chartWidth, setChartWidth] = useState(0);
+
+  if (data.length === 0) return null;
+
+  const chartHeight = 150;
+  const yAxisWidth = 58;
+  const latestValue = data[data.length - 1];
+  const safeRange = summary.max - summary.min || 1;
+  const innerWidth = Math.max(chartWidth - yAxisWidth - 12, 0);
+  const middleValue = summary.min + safeRange / 2;
+  const points: ChartPoint[] =
+    innerWidth > 0
+      ? data.map((value, index) => {
+          const x =
+            data.length === 1 ? innerWidth / 2 : (innerWidth / (data.length - 1)) * index;
+          const normalized = (value - summary.min) / safeRange;
+          const y = chartHeight - normalized * chartHeight;
+          return { x, y };
+        })
+      : [];
+
+  const gradientId = `trend-${metricKey}`;
+  const firstLabel = labels[0] ?? "";
+  const middleLabel = labels[Math.floor((labels.length - 1) / 2)] ?? "";
+  const lastLabel = labels[labels.length - 1] ?? "";
+
+  return (
+    <View
+      style={{
+        backgroundColor: colors.surface,
+        borderRadius: 18,
+        padding: 16,
+        borderWidth: 1,
+        borderColor: colors.border,
+        marginBottom: 14,
+      }}
+    >
+      <View
+        style={{
+          flexDirection: "row",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+          gap: 12,
+          marginBottom: 12,
+        }}
+      >
+        <View style={{ flex: 1 }}>
+          <Text style={{ color: colors.foreground, fontSize: 16, fontWeight: "700", marginBottom: 4 }}>
+            {title}
+          </Text>
+          <Text style={{ color: colors.muted, fontSize: 12, lineHeight: 18 }}>{description}</Text>
+        </View>
+        <View
+          style={{
+            paddingHorizontal: 12,
+            paddingVertical: 8,
+            borderRadius: 12,
+            backgroundColor: colors.background,
+            borderWidth: 1,
+            borderColor: colors.border,
+          }}
+        >
+          <Text style={{ color: colors.muted, fontSize: 10, marginBottom: 2 }}>最新値</Text>
+          <Text style={{ color, fontSize: 15, fontWeight: "800" }}>
+            {formatMetricValue(metricKey, latestValue)}
+          </Text>
+        </View>
+      </View>
+
+      <View style={{ flexDirection: "row", gap: 8, marginBottom: 14 }}>
+        <View
+          style={{
+            flex: 1,
+            padding: 10,
+            borderRadius: 12,
+            backgroundColor: colors.background,
+            borderWidth: 1,
+            borderColor: colors.border,
+          }}
+        >
+          <Text style={{ color: colors.muted, fontSize: 10, marginBottom: 3 }}>平均</Text>
+          <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: "700" }}>
+            {formatMetricValue(metricKey, summary.mean)}
+          </Text>
+        </View>
+        <View
+          style={{
+            flex: 1,
+            padding: 10,
+            borderRadius: 12,
+            backgroundColor: colors.background,
+            borderWidth: 1,
+            borderColor: colors.border,
+          }}
+        >
+          <Text style={{ color: colors.muted, fontSize: 10, marginBottom: 3 }}>レンジ</Text>
+          <Text
+            numberOfLines={1}
+            style={{ color: colors.foreground, fontSize: 13, fontWeight: "700" }}
+          >
+            {formatMetricValue(metricKey, summary.min)} - {formatMetricValue(metricKey, summary.max)}
+          </Text>
+        </View>
+      </View>
+
+      <View
+        onLayout={(event) => setChartWidth(event.nativeEvent.layout.width)}
+        style={{ flexDirection: "row", alignItems: "stretch", gap: 12 }}
+      >
+        <View style={{ width: yAxisWidth, height: chartHeight, justifyContent: "space-between" }}>
+          <Text style={{ color: colors.muted, fontSize: 11 }}>{formatMetricValue(metricKey, summary.max)}</Text>
+          <Text style={{ color: colors.muted, fontSize: 11 }}>{formatMetricValue(metricKey, middleValue)}</Text>
+          <Text style={{ color: colors.muted, fontSize: 11 }}>{formatMetricValue(metricKey, summary.min)}</Text>
+        </View>
+
+        <View style={{ flex: 1 }}>
+          <View
+            style={{
+              height: chartHeight,
+              borderRadius: 14,
+              backgroundColor: colors.background,
+              borderWidth: 1,
+              borderColor: colors.border,
+              overflow: "hidden",
+            }}
+          >
+            {innerWidth > 0 && (
+              <Svg width={innerWidth} height={chartHeight}>
+                <Defs>
+                  <LinearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+                    <Stop offset="0%" stopColor={color} stopOpacity="0.28" />
+                    <Stop offset="100%" stopColor={color} stopOpacity="0.02" />
+                  </LinearGradient>
+                </Defs>
+
+                <SvgLine x1="0" y1="0" x2={innerWidth} y2="0" stroke={colors.border} strokeDasharray="4 4" />
+                <SvgLine
+                  x1="0"
+                  y1={chartHeight / 2}
+                  x2={innerWidth}
+                  y2={chartHeight / 2}
+                  stroke={colors.border}
+                  strokeDasharray="4 4"
+                />
+                <SvgLine
+                  x1="0"
+                  y1={chartHeight}
+                  x2={innerWidth}
+                  y2={chartHeight}
+                  stroke={colors.border}
+                  strokeDasharray="4 4"
+                />
+
+                {points.length > 1 && (
+                  <>
+                    <Path d={buildAreaPath(points, chartHeight)} fill={`url(#${gradientId})`} />
+                    <Path
+                      d={buildLinePath(points)}
+                      fill="none"
+                      stroke={color}
+                      strokeWidth={3}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </>
+                )}
+
+                {points.map((point, index) => {
+                  const isLatest = index === points.length - 1;
+                  return (
+                    <Circle
+                      key={`${metricKey}-${index}`}
+                      cx={point.x}
+                      cy={point.y}
+                      r={isLatest ? 4.5 : 3}
+                      fill={isLatest ? color : colors.surface}
+                      stroke={color}
+                      strokeWidth={2}
+                    />
+                  );
+                })}
+              </Svg>
+            )}
+          </View>
+
+          <View style={{ flexDirection: "row", justifyContent: "space-between", marginTop: 8 }}>
+            <Text style={{ color: colors.muted, fontSize: 11 }}>{firstLabel}</Text>
+            <Text style={{ color: colors.muted, fontSize: 11 }}>{middleLabel}</Text>
+            <Text style={{ color: colors.muted, fontSize: 11 }}>{lastLabel}</Text>
+          </View>
+        </View>
+      </View>
+    </View>
+  );
+}
 
 function CorrelationCard({ corr }: { corr: CorrelationResult }) {
   const colors = useColors();
   const absR = Math.abs(corr.r);
-  const barColor = absR >= 0.7 ? colors.success : absR >= 0.4 ? colors.warning : colors.muted;
-  const barWidth = Math.max(absR * 100, 5);
-  return (
-    <View style={{ backgroundColor: colors.surface, borderRadius: 14, padding: 14, marginBottom: 10, borderWidth: 1, borderColor: colors.border }}>
-      <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 6 }}>
-        <Text style={{ color: colors.foreground, fontSize: 13, fontWeight: "600", flex: 1 }}>{corr.variableX} x {corr.variableY}</Text>
-        <Text style={{ color: colors.foreground, fontSize: 15, fontWeight: "800" }}>r = {corr.r.toFixed(3)}</Text>
-      </View>
-      <View style={{ height: 6, backgroundColor: colors.border, borderRadius: 3, marginBottom: 6 }}>
-        <View style={{ height: 6, width: `${barWidth}%`, backgroundColor: barColor, borderRadius: 3 }} />
-      </View>
-      <Text style={{ color: colors.muted, fontSize: 11 }}>{corr.interpretation}</Text>
-    </View>
-  );
-}
+  const accent = getCorrelationAccent(corr.r, colors.success, colors.error, colors.warning);
+  const fillWidth = `${Math.max(absR * 50, 2)}%` as `${number}%`;
 
-function StatsTable({ stats }: { stats: Record<string, StatsSummary> }) {
-  const colors = useColors();
-  const labels: Record<string, string> = { sentimentScore: "AI感情スコア", valence: "Valence", arousal: "Arousal", heartRate: "心拍数", skinConductance: "SC" };
   return (
-    <View style={{ backgroundColor: colors.surface, borderRadius: 14, borderWidth: 1, borderColor: colors.border, overflow: "hidden" }}>
-      <View style={{ flexDirection: "row", backgroundColor: colors.primary, paddingVertical: 10, paddingHorizontal: 12 }}>
-        <Text style={{ color: "#fff", fontSize: 12, fontWeight: "700", flex: 2 }}>変数</Text>
-        <Text style={{ color: "#fff", fontSize: 12, fontWeight: "700", flex: 1, textAlign: "center" }}>Mean</Text>
-        <Text style={{ color: "#fff", fontSize: 12, fontWeight: "700", flex: 1, textAlign: "center" }}>SD</Text>
-        <Text style={{ color: "#fff", fontSize: 12, fontWeight: "700", flex: 1, textAlign: "center" }}>Min</Text>
-        <Text style={{ color: "#fff", fontSize: 12, fontWeight: "700", flex: 1, textAlign: "center" }}>Max</Text>
-      </View>
-      {Object.entries(stats).map(([key, s]) => (
-        <View key={key} style={{ flexDirection: "row", paddingVertical: 10, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: colors.border }}>
-          <Text style={{ color: colors.foreground, fontSize: 12, flex: 2 }}>{labels[key] || key}</Text>
-          <Text style={{ color: colors.foreground, fontSize: 12, flex: 1, textAlign: "center" }}>{s.mean.toFixed(2)}</Text>
-          <Text style={{ color: colors.muted, fontSize: 12, flex: 1, textAlign: "center" }}>{s.stdDev.toFixed(2)}</Text>
-          <Text style={{ color: colors.muted, fontSize: 12, flex: 1, textAlign: "center" }}>{s.min.toFixed(2)}</Text>
-          <Text style={{ color: colors.muted, fontSize: 12, flex: 1, textAlign: "center" }}>{s.max.toFixed(2)}</Text>
+    <View
+      style={{
+        backgroundColor: colors.surface,
+        borderRadius: 16,
+        padding: 16,
+        marginBottom: 12,
+        borderWidth: 1,
+        borderColor: colors.border,
+      }}
+    >
+      <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 12, marginBottom: 10 }}>
+        <View style={{ flex: 1 }}>
+          <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: "700", marginBottom: 3 }}>
+            {corr.variableX} x {corr.variableY}
+          </Text>
+          <Text style={{ color: colors.muted, fontSize: 11 }}>n = {corr.n}</Text>
         </View>
-      ))}
-    </View>
-  );
-}
+        <Text style={{ color: accent, fontSize: 18, fontWeight: "800" }}>r = {corr.r.toFixed(3)}</Text>
+      </View>
 
-function MiniBarChart({ data, color, label }: { data: number[]; color: string; label: string }) {
-  const colors = useColors();
-  if (data.length < 2) return null;
-  const normalized = normalize(data);
-  return (
-    <View style={{ marginBottom: 12 }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 4 }}>
-        <View style={{ width: 12, height: 3, backgroundColor: color, borderRadius: 2 }} />
-        <Text style={{ color: colors.muted, fontSize: 11 }}>{label}</Text>
+      <View
+        style={{
+          height: 44,
+          borderRadius: 12,
+          backgroundColor: colors.background,
+          borderWidth: 1,
+          borderColor: colors.border,
+          position: "relative",
+          justifyContent: "center",
+          marginBottom: 8,
+          overflow: "hidden",
+        }}
+      >
+        <View
+          style={{
+            position: "absolute",
+            left: "50%",
+            top: 8,
+            bottom: 8,
+            width: 1,
+            backgroundColor: colors.border,
+          }}
+        />
+
+        <View
+          style={{
+            position: "absolute",
+            top: 12,
+            bottom: 12,
+            borderRadius: 999,
+            backgroundColor: accent,
+            opacity: 0.9,
+            width: fillWidth,
+            left: corr.r >= 0 ? "50%" : undefined,
+            right: corr.r < 0 ? "50%" : undefined,
+          }}
+        />
+
+        <View style={{ flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 10 }}>
+          <Text style={{ color: colors.muted, fontSize: 11 }}>-1</Text>
+          <Text style={{ color: colors.muted, fontSize: 11 }}>0</Text>
+          <Text style={{ color: colors.muted, fontSize: 11 }}>+1</Text>
+        </View>
       </View>
-      <View style={{ flexDirection: "row", height: 50, alignItems: "flex-end", gap: 1 }}>
-        {normalized.map((v, i) => (
-          <View key={i} style={{ flex: 1, height: Math.max(v * 46, 2) + 4, backgroundColor: color, borderTopLeftRadius: 2, borderTopRightRadius: 2, opacity: 0.7 + v * 0.3 }} />
-        ))}
-      </View>
+
+      <Text style={{ color: colors.muted, fontSize: 11, lineHeight: 17 }}>{corr.interpretation}</Text>
     </View>
   );
 }
@@ -72,61 +414,196 @@ function MiniBarChart({ data, color, label }: { data: number[]; color: string; l
 export default function AnalysisScreen() {
   const colors = useColors();
   const { sessions, loading } = useSessionStore();
-  const analysisData = useMemo(() => {
-    const sorted = [...sessions].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-    return generateAnalysisData(sorted);
-  }, [sessions]);
 
-  if (loading) return <ScreenContainer><View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}><ActivityIndicator size="large" color={colors.primary} /></View></ScreenContainer>;
-
-  if (sessions.length === 0) return (
-    <ScreenContainer>
-      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 32 }}>
-        <Text style={{ color: colors.foreground, fontSize: 20, fontWeight: "700", marginBottom: 8 }}>No Data</Text>
-        <Text style={{ color: colors.muted, fontSize: 14, textAlign: "center", lineHeight: 20 }}>{"分析にはセッションデータが必要です。\nSessions タブでダミーデータを生成するか、\nRecord タブからデータを入力してください。"}</Text>
-      </View>
-    </ScreenContainer>
+  const sorted = useMemo(
+    () => [...sessions].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()),
+    [sessions],
   );
 
-  const sorted = [...sessions].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  const analysisData = useMemo(() => generateAnalysisData(sorted), [sorted]);
+
+  const trendCharts = useMemo<TrendMetricConfig[]>(
+    () => [
+      {
+        key: "sentimentScore",
+        title: "AI感情スコア",
+        description: "発話テキストから推定した感情の極性推移",
+        color: colors.primary,
+      },
+      {
+        key: "valence",
+        title: "Valence",
+        description: "主観的な快・不快の変化",
+        color: colors.success,
+      },
+      {
+        key: "arousal",
+        title: "Arousal",
+        description: "主観的な覚醒度の変化",
+        color: colors.warning,
+      },
+      {
+        key: "heartRate",
+        title: "心拍数",
+        description: "心拍の時系列変化",
+        color: colors.error,
+      },
+      {
+        key: "skinConductance",
+        title: "皮膚コンダクタンス",
+        description: "自律神経反応の変化",
+        color: colors.tint,
+      },
+    ],
+    [colors.error, colors.primary, colors.success, colors.tint, colors.warning],
+  );
+
+  if (loading) {
+    return (
+      <ScreenContainer>
+        <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+          <ActivityIndicator size="large" color={colors.primary} />
+        </View>
+      </ScreenContainer>
+    );
+  }
+
+  if (sessions.length === 0) {
+    return (
+      <ScreenContainer>
+        <View style={{ flex: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 32 }}>
+          <Text style={{ color: colors.foreground, fontSize: 20, fontWeight: "700", marginBottom: 8 }}>
+            No Data
+          </Text>
+          <Text style={{ color: colors.muted, fontSize: 14, textAlign: "center", lineHeight: 20 }}>
+            {"分析にはセッションデータが必要です。\nSessions タブでダミーデータを生成するか、\nRecord タブからデータを入力してください。"}
+          </Text>
+        </View>
+      </ScreenContainer>
+    );
+  }
 
   return (
     <ScreenContainer>
       <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 100 }}>
-        <Text style={{ color: colors.foreground, fontSize: 24, fontWeight: "800", marginBottom: 4 }}>Analysis</Text>
-        <Text style={{ color: colors.muted, fontSize: 13, marginBottom: 20 }}>{sessions.length} sessions | 相関分析</Text>
+        <Text style={{ color: colors.foreground, fontSize: 24, fontWeight: "800", marginBottom: 4 }}>
+          Analysis
+        </Text>
+        <Text style={{ color: colors.muted, fontSize: 13, marginBottom: 20 }}>
+          {sessions.length} sessions | 図を読みやすく整理した分析ビュー
+        </Text>
 
         <View style={{ flexDirection: "row", gap: 10, marginBottom: 24 }}>
-          <View style={{ flex: 1, backgroundColor: colors.surface, borderRadius: 14, padding: 14, borderWidth: 1, borderColor: colors.border }}>
-            <Text style={{ color: colors.muted, fontSize: 11, marginBottom: 4 }}>Sessions</Text>
-            <Text style={{ color: colors.foreground, fontSize: 24, fontWeight: "800" }}>{sessions.length}</Text>
-          </View>
-          <View style={{ flex: 1, backgroundColor: colors.surface, borderRadius: 14, padding: 14, borderWidth: 1, borderColor: colors.border }}>
-            <Text style={{ color: colors.muted, fontSize: 11, marginBottom: 4 }}>Avg Valence</Text>
-            <Text style={{ color: colors.foreground, fontSize: 24, fontWeight: "800" }}>{analysisData.stats.valence.mean.toFixed(1)}</Text>
-          </View>
-          <View style={{ flex: 1, backgroundColor: colors.surface, borderRadius: 14, padding: 14, borderWidth: 1, borderColor: colors.border }}>
-            <Text style={{ color: colors.muted, fontSize: 11, marginBottom: 4 }}>Avg HR</Text>
-            <Text style={{ color: colors.foreground, fontSize: 24, fontWeight: "800" }}>{analysisData.stats.heartRate.mean.toFixed(0)}</Text>
-          </View>
+          <SummaryCard title="Sessions" value={String(sessions.length)} color={colors.primary} />
+          <SummaryCard
+            title="Avg Valence"
+            value={analysisData.stats.valence.mean.toFixed(1)}
+            color={colors.success}
+          />
+          <SummaryCard
+            title="Avg HR"
+            value={`${analysisData.stats.heartRate.mean.toFixed(0)} bpm`}
+            color={colors.error}
+          />
         </View>
 
-        <Text style={{ color: colors.foreground, fontSize: 16, fontWeight: "700", marginBottom: 12 }}>時系列推移</Text>
-        <View style={{ backgroundColor: colors.surface, borderRadius: 14, padding: 14, borderWidth: 1, borderColor: colors.border, marginBottom: 24 }}>
-          <MiniBarChart data={sorted.map(s => s.speech.sentimentScore)} color={colors.primary} label="AI感情スコア" />
-          <MiniBarChart data={sorted.map(s => s.selfReport.valence)} color={colors.success} label="自己報告 (Valence)" />
-          <MiniBarChart data={sorted.map(s => s.biometrics.heartRate)} color={colors.error} label="心拍数 (bpm)" />
-          <Text style={{ color: colors.muted, fontSize: 10, marginTop: 4 }}>各系列は0-1に正規化して表示</Text>
+        <Text style={{ color: colors.foreground, fontSize: 16, fontWeight: "700", marginBottom: 12 }}>
+          時系列チャート
+        </Text>
+        <View style={{ marginBottom: 24 }}>
+          {trendCharts.map((chart) => (
+            <TrendChartCard
+              key={chart.key}
+              metricKey={chart.key}
+              title={chart.title}
+              description={chart.description}
+              color={chart.color}
+              data={sorted.map((session) => getMetricValue(session, chart.key))}
+              labels={sorted.map((session) => formatDateLabel(session.timestamp))}
+              summary={analysisData.stats[chart.key]}
+            />
+          ))}
         </View>
 
-        <Text style={{ color: colors.foreground, fontSize: 16, fontWeight: "700", marginBottom: 12 }}>相関分析</Text>
-        {analysisData.correlations.map((c, i) => <CorrelationCard key={i} corr={c} />)}
+        <Text style={{ color: colors.foreground, fontSize: 16, fontWeight: "700", marginBottom: 12 }}>
+          相関の見取り図
+        </Text>
+        {analysisData.correlations.map((correlation, index) => (
+          <CorrelationCard key={`${correlation.variableX}-${correlation.variableY}-${index}`} corr={correlation} />
+        ))}
 
-        <Text style={{ color: colors.foreground, fontSize: 16, fontWeight: "700", marginBottom: 12, marginTop: 12 }}>統計サマリー</Text>
-        <StatsTable stats={analysisData.stats} />
+        <Text style={{ color: colors.foreground, fontSize: 16, fontWeight: "700", marginBottom: 12, marginTop: 12 }}>
+          統計サマリー
+        </Text>
+        <View
+          style={{
+            backgroundColor: colors.surface,
+            borderRadius: 16,
+            borderWidth: 1,
+            borderColor: colors.border,
+            overflow: "hidden",
+          }}
+        >
+          <View style={{ flexDirection: "row", backgroundColor: colors.primary, paddingVertical: 10, paddingHorizontal: 12 }}>
+            <Text style={{ color: "#fff", fontSize: 12, fontWeight: "700", flex: 2 }}>変数</Text>
+            <Text style={{ color: "#fff", fontSize: 12, fontWeight: "700", flex: 1, textAlign: "center" }}>Mean</Text>
+            <Text style={{ color: "#fff", fontSize: 12, fontWeight: "700", flex: 1, textAlign: "center" }}>SD</Text>
+            <Text style={{ color: "#fff", fontSize: 12, fontWeight: "700", flex: 1, textAlign: "center" }}>Min</Text>
+            <Text style={{ color: "#fff", fontSize: 12, fontWeight: "700", flex: 1, textAlign: "center" }}>Max</Text>
+          </View>
 
-        <View style={{ marginTop: 16, padding: 12, backgroundColor: colors.surface, borderRadius: 10, borderWidth: 1, borderColor: colors.border }}>
-          <Text style={{ color: colors.muted, fontSize: 11, lineHeight: 16 }}>注意: この分析は研究用プロトタイプによるものです。感情分析は簡易辞書ベースであり、相関係数はピアソンの積率相関係数を使用しています。</Text>
+          {(
+            [
+              ["sentimentScore", "AI感情スコア"],
+              ["valence", "Valence"],
+              ["arousal", "Arousal"],
+              ["heartRate", "心拍数"],
+              ["skinConductance", "SC"],
+            ] as const
+          ).map(([key, label]) => {
+            const stats = analysisData.stats[key];
+            return (
+              <View
+                key={key}
+                style={{
+                  flexDirection: "row",
+                  paddingVertical: 11,
+                  paddingHorizontal: 12,
+                  borderBottomWidth: 1,
+                  borderBottomColor: colors.border,
+                }}
+              >
+                <Text style={{ color: colors.foreground, fontSize: 12, flex: 2 }}>{label}</Text>
+                <Text style={{ color: colors.foreground, fontSize: 12, flex: 1, textAlign: "center" }}>
+                  {stats.mean.toFixed(2)}
+                </Text>
+                <Text style={{ color: colors.muted, fontSize: 12, flex: 1, textAlign: "center" }}>
+                  {stats.stdDev.toFixed(2)}
+                </Text>
+                <Text style={{ color: colors.muted, fontSize: 12, flex: 1, textAlign: "center" }}>
+                  {stats.min.toFixed(2)}
+                </Text>
+                <Text style={{ color: colors.muted, fontSize: 12, flex: 1, textAlign: "center" }}>
+                  {stats.max.toFixed(2)}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+
+        <View
+          style={{
+            marginTop: 16,
+            padding: 12,
+            backgroundColor: colors.surface,
+            borderRadius: 12,
+            borderWidth: 1,
+            borderColor: colors.border,
+          }}
+        >
+          <Text style={{ color: colors.muted, fontSize: 11, lineHeight: 17 }}>
+            時系列は各指標ごとに別チャート化し、軸ラベルと最新値を追加しました。相関はゼロ基準のバーで方向と強さがひと目で分かるようにしています。
+          </Text>
         </View>
       </ScrollView>
     </ScreenContainer>
