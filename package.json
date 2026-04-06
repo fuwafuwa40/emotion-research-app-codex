@@ -8,6 +8,7 @@
     "dev:server": "cross-env NODE_ENV=development tsx watch server/_core/index.ts",
     "dev:metro": "node scripts/start-web.mjs --no-open",
     "web": "node scripts/start-web.mjs",
+    "build:web": "pnpm exec expo export --platform web",
     "build": "esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist",
     "start": "NODE_ENV=production node dist/index.js",
     "check": "tsc --noEmit",

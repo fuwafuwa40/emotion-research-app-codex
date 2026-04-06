@@ -33,6 +33,12 @@ pnpm web
 pnpm dev
 ```
 
+Vercel にデプロイする場合は、静的 Web 出力を使います。リポジトリ側の設定は `vercel.json` に入っているので、Vercel 側で別の build command を手で設定する必要はありません。
+
+```bash
+pnpm build:web
+```
+
 ### 技術スタック
 
 本プロトタイプは以下の技術で構成されています。React Native (Expo SDK 54) をベースとし、TypeScriptによる型安全な開発を行っています。UIスタイリングにはNativeWind (Tailwind CSS) を使用し、状態管理はReact Context + AsyncStorageで実現しています。
